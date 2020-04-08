@@ -1,0 +1,238 @@
+ruleset gossip {
+  meta {
+    shares __testing, messages, mySeen, allSeen, getPeer, prepMessageToSend, prospectivePeers
+    use module io.picolabs.subscription alias sub
+  }
+  global {
+    __testing = { "queries":
+      [ { "name": "__testing" }
+      , { "name": "prospectivePeers" }
+      , { "name": "messages" }
+      , { "name": "mySeen" }
+      , { "name": "allSeen" }
+      , { "name": "getPeer" }
+      , { "name": "prepMessageToSend", "args":["peer"] }
+      ] , "events":
+      [ { "domain": "gossip", "type": "clear_messages" }
+      , { "domain": "gossip", "type": "send_rumor", "attrs": [ "MessageID", "peer" ] }
+      , { "domain": "gossip", "type": "send_seen", "attrs": [ "peer", "origin" ] }
+      , { "domain": "flower", "type": "new_order", "attrs": [ "order" ] }
+      , { "domain": "gossip", "type": "gossip" }
+      ]
+    }
+    
+    prospectivePeers = function() {
+      sub:established("Rx_role", "peer").map(function(x){
+        x{"Tx"}
+      }).union(ent:all_seen.keys()).map(function(x) {
+        {}.put(x, (ent:all_seen{x}) => ent:all_seen{x} | {})
+      }).reduce(function(a,b) {
+        a.put(b)
+      })
+    }
+    
+    getPeer = function() {
+      prospectivePeers().map(function(v,k){
+        v.keys().union(mySeen().keys()).map(function(x){
+          num = (v{x}) => v{x} | -1;
+          {"messageID": x, "latest": num}
+        }).map(function(x) {
+          x{"latest"} - mySeen(){x{"messageID"}}
+        })/*comment after this to get {messageID: score}*/.reduce(function(a,b) {
+          a + b
+        })
+      }).map(function(v,k) { {}.put(k,v) }).values()
+      .reduce(function(a,b) {
+        (math:abs(a.values().head()) > math:abs(b.values().head()) => a | b)
+      })
+      //negative means that I have more than they have, and should send a rumor
+      // positive means they have more than I have, and should send a seen
+    }
+    
+    prepMessageToSend = function(peer) {
+     msgId = ent:all_seen{peer}.keys().union(mySeen().keys()).map(function(x){
+          num = (ent:all_seen{peer}{x}) => ent:all_seen{peer}{x} | -1;
+          {"messageID": x, "latest": num}
+        }).map(function(x) {
+          {}.put(x{"messageID"}, x{"latest"} - mySeen(){x{"messageID"}})
+        }).reduce(function(a, b) {
+          (a.values().head() < b.values().head()) => a | b
+        }).keys().head()
+      
+      msgNum = ent:all_seen{peer}{msgId}.defaultsTo(-1)+1
+      msg = msgId + ":" + msgNum
+      ent:messages.filter(function(x) {
+        x{"MessageID"} == msg
+      }).head()
+    }
+    
+    messages = function() {
+      ent:messages.defaultsTo([])
+    }
+    
+    mySeen = function() {
+      ent:messages =>
+      ent:messages.map(function(x) {
+        arr = x{"MessageID"}.split(re#:#);
+        {}.put(arr[0],arr[1].as("Number"))
+      }).reduce(function(a,b) {
+        key = b.keys().head()
+        a.put(key, a.get(key).defaultsTo([]).append(b.get(key)))
+      }).map(function(v, k){
+        (v >< 0) =>
+        v.sort("numeric").reduce(function(a,b) {
+          (a+1 == b) => b | a
+        }) | 0
+      }) 
+      | {}
+    }
+    
+    allSeen = function() {
+      ent:all_seen
+    }
+    
+    getNextID = function() {
+      ent:messages.defaultsTo([]).filter(function(x){
+        x{"SensorID"} == meta:picoId
+      }).length()
+    }
+  }
+  
+  rule new_order {
+    select when flower new_order
+    
+    pre {
+      order = event:attr("order");
+      sensorID = meta:picoId;
+      messageID = getNextID()
+      message = { 
+        "MessageID": <<#{sensorID}:#{messageID}>>,
+        "SensorID": sensorID,
+        "order": order 
+      }
+      
+    }
+    
+    if order then noop();
+    
+    fired {
+      ent:messages := ent:messages.defaultsTo([]).append(message)
+    }
+  }
+  
+  rule new_rumor {
+    select when gossip rumor
+    
+    pre {
+      rumor = event:attr("rumor")
+    }
+    
+    if rumor{"MessageID"} && not (ent:messages.defaultsTo([]) >< rumor) then noop();
+    
+    fired {
+      ent:messages := ent:messages.defaultsTo([]).append(rumor)
+    }
+    
+  }
+  
+  rule send_rumor {
+    select when gossip send_rumor
+    pre {
+      peer = event:attr("peer")
+      message = event:attr("message")
+      arr = message{"MessageID"}.split(":")
+    }
+    
+    if peer && message then event:send(
+      { "eci": peer, "eid": "gossip",
+        "domain": "gossip", "type": "rumor",
+        "attrs": { "rumor": message } } )
+        
+    fired {
+      ent:all_seen := ent:all_seen.defaultsTo({}).put([peer, arr[0]], arr[1].as("Number"))
+    }
+  }
+  
+  rule new_seen {
+    select when gossip seen
+    
+    pre {
+      origin = event:attr("origin")
+      seen = event:attr("seen")
+    }
+    
+    if origin && seen then noop()
+    
+    fired{
+      ent:all_seen := ent:all_seen.defaultsTo({}).put(origin, seen)
+    }
+  }
+  
+  rule send_seen {
+    select when gossip send_seen
+    pre {
+      peer = event:attr("peer")
+      origin = event:attr("origin")
+    }
+    
+    if peer && origin then event:send(
+      { "eci": peer, "eid": "gossip",
+        "domain": "gossip", "type": "seen",
+        "attrs": { "seen": mySeen(), "origin": origin } } )
+  }
+  
+  rule gossip {
+    select when gossip gossip
+    
+    pre {
+      gp = getPeer();
+      peer = gp.keys().head().klog("peer");
+      message = (gp.values().head() < 0) => prepMessageToSend(peer).klog("message") | null.klog("seen selected");
+      origin = sub:established().filter(function(x){
+        x{"Tx"} == peer
+      }).head(){"Rx"}.klog("origin")
+    }
+    
+    if ent:process.defaultsTo(true) && message then noop();
+    
+    fired {
+      raise gossip event "send_rumor" attributes {
+        "peer": peer,
+        "message": message
+      }
+      schedule gossip event "gossip" at time:add(time:now(), { "seconds": 3 })
+    }
+    else {
+      raise gossip event "send_seen" attributes {
+        "peer": peer,
+        "origin": origin
+      }
+      schedule gossip event "gossip" at time:add(time:now(), { "seconds": 3 })
+    }
+  }
+  
+  rule clear_messages {
+    select when gossip clear_messages
+    fired {
+      clear ent:messages
+      clear ent:all_seen
+    }
+  }
+  
+  rule process {
+    select when gossip process
+    
+    pre {
+      process = event:attr("process")
+    }
+    
+    if process == "on" then noop()
+    
+    fired {
+      ent:process := true
+    }
+    else {
+      ent:process := false
+    }
+  }
+}
