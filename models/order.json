@@ -1,0 +1,20 @@
+{
+  "id": "ord_123456789",
+  "store": {
+    "eci": "cjV800s3Slke3JFl3",
+    "name": "Petalz 4 Dayz",
+    "location": {
+      "latitude": -111.450948,
+      "longitude": 69.69
+    },
+  },
+  "customer": {
+    "location": {
+      "latitude": -111.1,
+      "longitude": 69.96
+    }
+  },
+  "status": "pending" | "accepted" | "fulfilled",
+  "date": 46654346754,
+  "driver": "dri_123456789",
+}
