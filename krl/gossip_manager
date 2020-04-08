@@ -1,0 +1,52 @@
+ruleset gossip_manager {
+  meta {
+    shares __testing
+    use module io.picolabs.wrangler alias wrangler
+  }
+  global {
+    __testing = { "queries":
+      [ { "name": "__testing" }
+      //, { "name": "childs" }
+      ] , "events":
+      [ { "domain": "manager", "type": "add_order" }
+      , { "domain": "manager", "type": "clear" }
+      , { "domain": "manager", "type": "stop_gossip" }
+      , { "domain": "manager", "type": "gossip" }
+      ]
+    }
+  }
+  
+  rule add_order {
+    select when manager add_order
+    
+    foreach wrangler:children() setting(x)
+      event:send({ "eci": x{"eci"}, "eid": "temp",
+        "domain": "flower", "type": "new_order",
+        "attrs": { "order": random:uuid() } })
+  }
+  
+  rule gossip {
+    select when manager gossip
+    
+    foreach wrangler:children() setting(x)
+      event:send({ "eci": x{"eci"}, "eid": "temp",
+        "domain": "gossip", "type": "gossip" })
+  }
+  
+  rule clear {
+    select when manager clear
+    
+    foreach wrangler:children() setting(x)
+      event:send({ "eci": x{"eci"}, "eid": "clear_gossip",
+        "domain": "gossip", "type": "clear_messages" })
+  }
+  
+  rule stop_gossip {
+    select when manager stop_gossip
+    
+    foreach schedule:list() setting (x)
+      schedule:remove(x{"id"})
+  }
+  
+
+}
