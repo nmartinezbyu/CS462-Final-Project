@@ -17,4 +17,8 @@
   "status": "pending" | "accepted" | "fulfilled",
   "date": 46654346754,
   "driver": "dri_123456789",
+  "items": [
+    { "name": "Rose", "id": "1234" },
+    { "name": "Dandelion", "id": "56789" },
+  ]
 }
